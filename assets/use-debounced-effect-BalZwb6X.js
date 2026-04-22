@@ -1,0 +1,1 @@
+import{r as t}from"./index-D30al5fQ.js";function f(r,o,n){const e=t.useRef(void 0);t.useEffect(()=>{const u=window.setTimeout(()=>{e.current=r()},Math.max(0,o));return()=>{window.clearTimeout(u),typeof e.current=="function"&&e.current(),e.current=void 0}},n)}export{f as u};
