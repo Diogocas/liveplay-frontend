@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "game": "gta5-legacy",
+  "rootFiles": ["dinput8.dll", "ScriptHookV.dll"],
+  "scriptFiles": ["ScriptHookVDotNet.asi", "ScriptHookVDotNet3.dll"],
+  "optionalScriptFiles": ["ScriptHookVDotNet2.dll", "ScriptHookVDotNet.ini"],
+  "note": "O instalador copia automaticamente os arquivos presentes nessas pastas. Binários de terceiros não estão incluídos neste pacote."
+}

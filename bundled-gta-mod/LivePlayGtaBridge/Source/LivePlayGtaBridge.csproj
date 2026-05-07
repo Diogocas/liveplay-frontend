@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>LivePlayGtaBridge</AssemblyName>
+    <RootNamespace>LivePlayGtaBridge</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Ajuste o HintPath para a DLL do ScriptHookVDotNet instalada no seu ambiente de build. -->
+    <Reference Include="ScriptHookVDotNet3">
+      <HintPath>libs\ScriptHookVDotNet3.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+{
+  "name": "LivePlay GTA V Legacy Bridge",
+  "version": 7,
+  "bridgePort": 35951,
+  "mode": "story",
+  "game": "gta5-legacy",
+  "endpoint": "http://127.0.0.1:35951/liveplay/command",
+  "safeModeOnly": true
+}
