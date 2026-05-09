@@ -586,8 +586,8 @@ public class LivePlayGtaBridge : Script
         if (!model.IsLoaded) { Notify("LivePlay GTA: modelo não carregou g_m_y_lost_01"); return; }
 
         int spawned = 0;
-        WeaponHash[] weapons = new WeaponHash[] { WeaponHash.Knife, WeaponHash.Pistol };
-        string[] labels = new string[] { "faca", "pistola" };
+        WeaponHash[] weapons = new WeaponHash[] { WeaponHash.Knife, WeaponHash.Bat };
+        string[] labels = new string[] { "faca", "taco" };
 
         for (int i = 0; i < 2; i++)
         {
