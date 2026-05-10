@@ -13,10 +13,23 @@ using GTA.Native;
 
 public class LivePlayGtaBridge : Script
 {
+    private sealed class NamedPed
+    {
+        public Ped Ped;
+        public string Name;
+    }
+
+    private readonly List<NamedPed> _namedPeds = new List<NamedPed>();
+    private const string DefaultNpcOwnerName = "LivePlay";
+    private const float NamedPedDrawDistance = 65.0f;
+    private const int LogicTickIntervalMs = 50;
+    private int _nextLogicTickGameTime = 0;
     private readonly ConcurrentQueue<string> _commands = new ConcurrentQueue<string>();
     private TcpListener _listener;
     private Thread _serverThread;
     private bool _running;
+    private bool _bridgeConnected = false;
+    private volatile bool _pendingAppConnectedNotify = false;
     private int _port = 35951;
     private const int TimedEffectDurationMs = 15000;
     private const int NeedForSpeedDurationMs = 20000;
@@ -42,6 +55,8 @@ public class LivePlayGtaBridge : Script
     private int _earthquakeNextPulseGameTime = 0;
     private int _meteorUntilGameTime = 0;
     private int _meteorNextDropGameTime = 0;
+    private int _invisibleVehiclesUntilGameTime = 0;
+    private readonly List<Vehicle> _invisibleVehicles = new List<Vehicle>();
     private readonly List<Ped> _explosiveZombies = new List<Ped>();
     private int _explosiveZombiesUntilGameTime = 0;
     private int _explosiveZombieNextSpawnGameTime = 0;
@@ -82,13 +97,14 @@ public class LivePlayGtaBridge : Script
     public LivePlayGtaBridge()
     {
         WriteLog("Bridge constructor iniciado");
-        Interval = 50;
+        // Interval 0 desenha elementos visuais todo frame.
+        // A lógica pesada continua limitada pelo LogicTickIntervalMs dentro do OnTick.
+        Interval = 0;
         Tick += OnTick;
         Aborted += OnAborted;
         LoadConfig();
         StartServer();
         WriteLog("Bridge iniciado na porta " + _port);
-        Notify("~g~LivePlay GTA ativo~s~ | Integracao pronta para eventos");
     }
 
     private void LoadConfig()
@@ -151,6 +167,18 @@ public class LivePlayGtaBridge : Script
                 NetworkStream stream = client.GetStream();
                 string raw = ReadHttpRequest(stream);
 
+                if (raw.StartsWith("POST /liveplay/ping", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!_bridgeConnected)
+                    {
+                        _bridgeConnected = true;
+                        _pendingAppConnectedNotify = true;
+                    }
+
+                    WriteHttp(stream, 200, "pong");
+                    return;
+                }
+
                 if (!raw.StartsWith("POST /liveplay/command", StringComparison.OrdinalIgnoreCase))
                 {
                     WriteHttp(stream, 404, "not-found");
@@ -163,6 +191,12 @@ public class LivePlayGtaBridge : Script
                 {
                     WriteHttp(stream, 400, "empty-command");
                     return;
+                }
+
+                if (!_bridgeConnected)
+                {
+                    _bridgeConnected = true;
+                    _pendingAppConnectedNotify = true;
                 }
 
                 _commands.Enqueue(command.Trim());
@@ -234,10 +268,33 @@ public class LivePlayGtaBridge : Script
 
     private void OnTick(object sender, EventArgs e)
     {
+        if (_pendingAppConnectedNotify)
+        {
+            _pendingAppConnectedNotify = false;
+            Notify("~g~LivePlay GTA conectado ao app~s~");
+        }
+
+        // Texto 3D e markers do GTA precisam ser redesenhados todo frame;
+        // se desenhar só a cada 50ms/100ms, o nome dos NPCs fica piscando.
+        MaintainFrameVisuals();
+
+        if (Game.GameTime < _nextLogicTickGameTime) return;
+        _nextLogicTickGameTime = Game.GameTime + LogicTickIntervalMs;
+
         MaintainTimedStates();
         int limit = 10;
         string command;
         while (limit-- > 0 && _commands.TryDequeue(out command)) ExecuteLivePlayCommand(command);
+    }
+
+    private void MaintainFrameVisuals()
+    {
+        try { MaintainNamedPeds(); } catch { }
+        try
+        {
+            if (_blackHoleUntilGameTime > 0 && Game.GameTime <= _blackHoleUntilGameTime) DrawBlackHoleVisual();
+        }
+        catch { }
     }
 
     private void MaintainTimedStates()
@@ -395,7 +452,7 @@ public class LivePlayGtaBridge : Script
                     ReleaseBlackHoleTargets();
                     _blackHoleUntilGameTime = 0;
                     _blackHoleNextPulseGameTime = 0;
-                    try { Interval = 50; } catch { }
+                    try { Interval = 0; } catch { }
                     Notify("LivePlay GTA: black hole encerrado");
                 }
                 else if (Game.GameTime >= _blackHoleNextPulseGameTime)
@@ -405,6 +462,7 @@ public class LivePlayGtaBridge : Script
                 }
             }
 
+            MaintainInvisibleVehicles();
             MaintainExplosiveZombies();
         }
         catch { }
@@ -433,6 +491,9 @@ public class LivePlayGtaBridge : Script
         if (normalized.StartsWith("spawn_moto_bandits")) { SpawnMotoGroup("g_m_y_lost_01", true, 2, "LivePlay: moto bandidos"); return; }
         if (normalized.StartsWith("spawn_vehicle")) { SpawnVehicle(Arg(command, 1, "adder")); return; }
         if (normalized.StartsWith("spawn_ped")) { SpawnPed(Arg(command, 1, "s_m_y_cop_01")); return; }
+        if (normalized.StartsWith("spawn_rifle_chimp")) { SpawnRifleChimp(); return; }
+        if (normalized.StartsWith("invisible_vehicles")) { InvisibleVehicles(); return; }
+        if (normalized.StartsWith("spawn_single_armed_attacker")) { SpawnAttackers("g_m_y_lost_01", 1, true, WeaponHash.Pistol, true, "LivePlay GTA: 1 inimigo armado"); return; }
         if (normalized.StartsWith("repair_vehicle")) { RepairVehicle(); return; }
         if (normalized.StartsWith("boost_vehicle")) { BoostVehicle(); return; }
         if (normalized.StartsWith("need_for_speed")) { NeedForSpeed(); return; }
@@ -469,7 +530,7 @@ public class LivePlayGtaBridge : Script
 
         for (int i = 0; i < ExplosiveZombiesInitialWave; i++) SpawnExplosiveZombie(i);
 
-        try { Interval = 50; } catch { }
+        try { Interval = 0; } catch { }
         Notify("LivePlay GTA: invasão de zumbis explosivos por 32s");
     }
 
@@ -564,7 +625,7 @@ public class LivePlayGtaBridge : Script
             _explosiveZombiesUntilGameTime = 0;
             _explosiveZombieNextSpawnGameTime = 0;
             StopExplosiveZombieNight();
-            try { Interval = 100; } catch { }
+            try { Interval = 0; } catch { }
             Notify("LivePlay GTA: invasão de zumbis encerrada");
         }
     }
@@ -612,6 +673,7 @@ public class LivePlayGtaBridge : Script
         try { Function.Call(Hash.SET_PED_KEEP_TASK, zombie.Handle, true); } catch { }
 
         _explosiveZombies.Add(zombie);
+        RegisterNamedPed(zombie);
     }
 
     private void ExplodeZombie(Ped zombie)
@@ -733,11 +795,184 @@ public class LivePlayGtaBridge : Script
         Ped ped = World.CreatePed(model, pos, player.Heading + 180f);
         if (ped != null)
         {
+            RegisterNamedPed(ped);
             ped.Weapons.Give(WeaponHash.Pistol, 120, true, true);
             ped.Task.FightAgainst(player);
         }
         model.MarkAsNoLongerNeeded();
         Notify("LivePlay: ped " + modelName);
+    }
+
+    private void InvisibleVehicles()
+    {
+        Ped player = Game.Player.Character;
+        if (player == null || !player.Exists()) return;
+
+        try { RestoreInvisibleVehicles(false); } catch { }
+
+        _invisibleVehiclesUntilGameTime = Game.GameTime + 30000;
+        int count = ScanInvisibleVehiclesAroundPlayer();
+
+        Notify(count > 0 ? "LivePlay GTA: veículos invisíveis por 30s" : "LivePlay GTA: nenhum veículo próximo");
+    }
+
+    private int ScanInvisibleVehiclesAroundPlayer()
+    {
+        Ped player = Game.Player.Character;
+        if (player == null || !player.Exists()) return 0;
+
+        int count = 0;
+
+        try
+        {
+            if (player.IsInVehicle())
+            {
+                Vehicle currentVehicle = player.CurrentVehicle;
+                if (currentVehicle != null && currentVehicle.Exists() && !IsVehicleAlreadyInvisible(currentVehicle))
+                {
+                    MakeVehicleInvisibleOnly(currentVehicle);
+                    count++;
+                }
+            }
+        }
+        catch { }
+
+        Vehicle[] vehicles = World.GetNearbyVehicles(player, 280f);
+        foreach (Vehicle vehicle in vehicles)
+        {
+            if (vehicle == null || !vehicle.Exists()) continue;
+            if (_invisibleVehicles.Count >= 180) break;
+            if (IsVehicleAlreadyInvisible(vehicle)) continue;
+
+            try
+            {
+                MakeVehicleInvisibleOnly(vehicle);
+                count++;
+            }
+            catch { }
+        }
+
+        return count;
+    }
+
+    private bool IsVehicleAlreadyInvisible(Vehicle vehicle)
+    {
+        if (vehicle == null || !vehicle.Exists()) return false;
+
+        for (int i = _invisibleVehicles.Count - 1; i >= 0; i--)
+        {
+            try
+            {
+                Vehicle current = _invisibleVehicles[i];
+                if (current == null || !current.Exists())
+                {
+                    _invisibleVehicles.RemoveAt(i);
+                    continue;
+                }
+
+                if (current.Handle == vehicle.Handle) return true;
+            }
+            catch
+            {
+                try { _invisibleVehicles.RemoveAt(i); } catch { }
+            }
+        }
+
+        return false;
+    }
+
+    private void MakeVehicleInvisibleOnly(Vehicle vehicle)
+    {
+        if (vehicle == null || !vehicle.Exists()) return;
+        if (IsVehicleAlreadyInvisible(vehicle)) return;
+
+        try { Function.Call(Hash.SET_ENTITY_VISIBLE, vehicle.Handle, true, false); } catch { }
+        try { Function.Call(Hash.SET_ENTITY_ALPHA, vehicle.Handle, 0, false); } catch { }
+        try { KeepVehicleOccupantsVisible(vehicle); } catch { }
+
+        _invisibleVehicles.Add(vehicle);
+    }
+
+    private void KeepVehicleOccupantsVisible(Vehicle vehicle)
+    {
+        if (vehicle == null || !vehicle.Exists()) return;
+
+        for (int seat = -1; seat <= 15; seat++)
+        {
+            try
+            {
+                Ped ped = vehicle.GetPedOnSeat((VehicleSeat)seat);
+                if (ped == null || !ped.Exists()) continue;
+
+                Function.Call(Hash.SET_ENTITY_VISIBLE, ped.Handle, true, false);
+                Function.Call(Hash.RESET_ENTITY_ALPHA, ped.Handle);
+            }
+            catch { }
+        }
+
+        try
+        {
+            Ped player = Game.Player.Character;
+            if (player != null && player.Exists())
+            {
+                Function.Call(Hash.SET_ENTITY_VISIBLE, player.Handle, true, false);
+                Function.Call(Hash.RESET_ENTITY_ALPHA, player.Handle);
+            }
+        }
+        catch { }
+    }
+
+    private void MaintainInvisibleVehicles()
+    {
+        if (_invisibleVehiclesUntilGameTime <= 0) return;
+
+        if (Game.GameTime <= _invisibleVehiclesUntilGameTime)
+        {
+            try { ScanInvisibleVehiclesAroundPlayer(); } catch { }
+
+            for (int i = _invisibleVehicles.Count - 1; i >= 0; i--)
+            {
+                Vehicle vehicle = _invisibleVehicles[i];
+                try
+                {
+                    if (vehicle == null || !vehicle.Exists())
+                    {
+                        _invisibleVehicles.RemoveAt(i);
+                        continue;
+                    }
+
+                    Function.Call(Hash.SET_ENTITY_VISIBLE, vehicle.Handle, true, false);
+                    Function.Call(Hash.SET_ENTITY_ALPHA, vehicle.Handle, 0, false);
+                    KeepVehicleOccupantsVisible(vehicle);
+                }
+                catch { }
+            }
+            return;
+        }
+
+        RestoreInvisibleVehicles(true);
+    }
+
+    private void RestoreInvisibleVehicles(bool notify)
+    {
+        for (int i = _invisibleVehicles.Count - 1; i >= 0; i--)
+        {
+            Vehicle vehicle = _invisibleVehicles[i];
+            try
+            {
+                if (vehicle != null && vehicle.Exists())
+                {
+                    Function.Call(Hash.SET_ENTITY_VISIBLE, vehicle.Handle, true, false);
+                    Function.Call(Hash.RESET_ENTITY_ALPHA, vehicle.Handle);
+                    KeepVehicleOccupantsVisible(vehicle);
+                }
+            }
+            catch { }
+        }
+
+        _invisibleVehicles.Clear();
+        _invisibleVehiclesUntilGameTime = 0;
+        if (notify) Notify("LivePlay GTA: veículos visíveis novamente");
     }
 
     private void SpawnAttackers(string pedModelName, int count, bool armed, WeaponHash weapon, bool hostile, string message)
@@ -753,6 +988,7 @@ public class LivePlayGtaBridge : Script
             Vector3 offset = player.ForwardVector * (5f + i * 1.8f) + player.RightVector * ((i % 2 == 0 ? 1f : -1f) * (2.5f + i));
             Ped ped = World.CreatePed(model, player.Position + offset, player.Heading + 180f);
             if (ped == null) continue;
+            RegisterNamedPed(ped);
             spawned++;
             if (armed)
             {
@@ -787,6 +1023,7 @@ public class LivePlayGtaBridge : Script
             Vector3 offset = player.ForwardVector * (5.4f + i * 1.8f) + player.RightVector * (i == 0 ? -2.8f : 2.8f);
             Ped ped = World.CreatePed(model, player.Position + offset, player.Heading + 180f);
             if (ped == null) continue;
+            RegisterNamedPed(ped);
             spawned++;
 
             try { ped.Weapons.Give(weapons[i], i == 0 ? 1 : 180, true, true); } catch { }
@@ -818,6 +1055,7 @@ public class LivePlayGtaBridge : Script
             return;
         }
 
+        RegisterNamedPed(cop);
         try { Function.Call(Hash.SET_PED_DEFAULT_COMPONENT_VARIATION, cop.Handle); } catch { }
         try { cop.MaxHealth = 620; } catch { }
         try { Function.Call(Hash.SET_ENTITY_MAX_HEALTH, cop.Handle, 620); } catch { }
@@ -859,6 +1097,7 @@ public class LivePlayGtaBridge : Script
             Vector3 offset = player.ForwardVector * (4f + i * 1.4f) + player.RightVector * ((i % 2 == 0 ? 1f : -1f) * (1.5f + i));
             Ped animal = World.CreatePed(model, player.Position + offset, player.Heading + 180f);
             if (animal == null) continue;
+            RegisterNamedPed(animal);
             spawned++;
             if (hostile)
             {
@@ -894,6 +1133,7 @@ public class LivePlayGtaBridge : Script
             return;
         }
 
+        RegisterNamedPed(chimp);
         try { chimp.Health = 260; } catch { }
         try { chimp.MaxHealth = 260; } catch { }
         try { Function.Call(Hash.SET_BLOCKING_OF_NON_TEMPORARY_EVENTS, chimp.Handle, true); } catch { }
@@ -916,6 +1156,58 @@ public class LivePlayGtaBridge : Script
         Notify("LivePlay GTA: chimp com machado");
     }
 
+
+    private void SpawnRifleChimp()
+    {
+        Ped player = Game.Player.Character;
+        if (player == null || !player.Exists()) return;
+
+        Model model = new Model("a_c_chimp");
+        model.Request(1200);
+        if (!model.IsLoaded) { Notify("LivePlay GTA: rifle chimp não carregou"); return; }
+
+        Vector3 offset = player.ForwardVector * 5.2f + player.RightVector * 1.2f;
+        Ped chimp = World.CreatePed(model, player.Position + offset, player.Heading + 180f);
+        if (chimp == null)
+        {
+            model.MarkAsNoLongerNeeded();
+            Notify("LivePlay GTA: rifle chimp não criado");
+            return;
+        }
+
+        RegisterNamedPed(chimp);
+
+        try { Function.Call(Hash.SET_PED_DEFAULT_COMPONENT_VARIATION, chimp.Handle); } catch { }
+        try { chimp.MaxHealth = 360; } catch { }
+        try { Function.Call(Hash.SET_ENTITY_MAX_HEALTH, chimp.Handle, 360); } catch { }
+        try { chimp.Health = 360; } catch { }
+        try { Function.Call(Hash.SET_ENTITY_HEALTH, chimp.Handle, 360); } catch { }
+        try { Function.Call(Hash.SET_PED_ARMOUR, chimp.Handle, 80); } catch { }
+        try { Function.Call(Hash.SET_PED_SUFFERS_CRITICAL_HITS, chimp.Handle, false); } catch { }
+        try { Function.Call(Hash.SET_PED_DIES_WHEN_INJURED, chimp.Handle, false); } catch { }
+        try { Function.Call(Hash.SET_BLOCKING_OF_NON_TEMPORARY_EVENTS, chimp.Handle, true); } catch { }
+        try { Function.Call(Hash.SET_PED_FLEE_ATTRIBUTES, chimp.Handle, 0, false); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_ABILITY, chimp.Handle, 2); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_MOVEMENT, chimp.Handle, 2); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_RANGE, chimp.Handle, 2); } catch { }
+        try { Function.Call(Hash.SET_PED_ACCURACY, chimp.Handle, 55); } catch { }
+        try { Function.Call(Hash.SET_PED_SHOOT_RATE, chimp.Handle, 650); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_ATTRIBUTES, chimp.Handle, 5, true); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_ATTRIBUTES, chimp.Handle, 46, true); } catch { }
+        try { Function.Call(Hash.SET_PED_AS_ENEMY, chimp.Handle, true); } catch { }
+
+        try { chimp.Weapons.Give(WeaponHash.CarbineRifle, 900, true, true); } catch { }
+        try { Function.Call(Hash.GIVE_WEAPON_TO_PED, chimp.Handle, unchecked((int)0x83BF0278), 900, false, true); } catch { }
+        try { Function.Call(Hash.SET_CURRENT_PED_WEAPON, chimp.Handle, unchecked((int)0x83BF0278), true); } catch { }
+
+        try { chimp.Task.FightAgainst(player); } catch { }
+        try { Function.Call(Hash.TASK_COMBAT_PED, chimp.Handle, player.Handle, 0, 16); } catch { }
+        try { Function.Call(Hash.SET_PED_KEEP_TASK, chimp.Handle, true); } catch { }
+
+        model.MarkAsNoLongerNeeded();
+        Notify("LivePlay GTA: rifle chimp");
+    }
+
     private void SpawnAngryAlienWithRayPistol()
     {
         Ped player = Game.Player.Character;
@@ -934,6 +1226,7 @@ public class LivePlayGtaBridge : Script
             return;
         }
 
+        RegisterNamedPed(alien);
         // Força aparência/default do ped alienígena e deixa ele com resistência real.
         // Ordem importante: primeiro MaxHealth, depois Health. Antes isso podia deixar ele com vida padrão.
         try { Function.Call(Hash.SET_PED_DEFAULT_COMPONENT_VARIATION, alien.Handle); } catch { }
@@ -989,6 +1282,7 @@ public class LivePlayGtaBridge : Script
             return;
         }
 
+        RegisterNamedPed(clown);
         try { clown.Health = 460; } catch { }
         try { clown.MaxHealth = 460; } catch { }
         try { Function.Call(Hash.SET_BLOCKING_OF_NON_TEMPORARY_EVENTS, clown.Handle, true); } catch { }
@@ -1206,6 +1500,7 @@ public class LivePlayGtaBridge : Script
             Ped ped = World.CreatePed(pedModel, player.Position + offset + new Vector3(0f, 0f, 1f), player.Heading + 180f);
             if (ped != null)
             {
+                RegisterNamedPed(ped);
                 ped.Weapons.Give(WeaponHash.Pistol, 160, true, true);
                 if (bike != null) ped.SetIntoVehicle(bike, VehicleSeat.Driver);
                 if (hostile) ped.Task.FightAgainst(player);
@@ -1628,10 +1923,12 @@ public class LivePlayGtaBridge : Script
         if (slug == "flip_nearby_vehicles") { FlipNearbyVehicles(); return; }
         if (slug == "random_vehicle_complete_tuning") { TuneCurrentVehicle(true); return; }
         if (slug == "random_vehicle_part_tuning") { TuneCurrentVehicle(false); return; }
+        if (slug == "invisible_vehicles") { InvisibleVehicles(); return; }
 
         if (slug == "spawn_attackers") { SpawnMixedKnifeAndPistolAttackers(); return; }
         if (slug == "explosive_zombies") { StartExplosiveZombies(); return; }
         if (slug == "spawn_armed_attackers") { SpawnAttackers("g_m_y_lost_01", 2, true, WeaponHash.Pistol, true, "LivePlay GTA: 2 inimigos com pistola"); return; }
+        if (slug == "spawn_single_armed_attacker") { SpawnAttackers("g_m_y_lost_01", 1, true, WeaponHash.Pistol, true, "LivePlay GTA: 1 inimigo armado"); return; }
         if (slug == "spawn_angry_cop") { SpawnAttackers("s_m_y_cop_01", 1, true, WeaponHash.Pistol, true, "LivePlay GTA: policial agressivo"); return; }
         if (slug == "spawn_extreme_angry_cop") { SpawnExtremeAngryCopStrong(); return; }
         if (slug == "spawn_moto_cops") { SpawnMotoGroup("s_m_y_cop_01", true, 2, "LivePlay GTA: moto cops"); return; }
@@ -1639,6 +1936,7 @@ public class LivePlayGtaBridge : Script
         if (slug == "spawn_angry_alien") { SpawnAngryAlienWithRayPistol(); return; }
         if (slug == "spawn_clown" || slug == "spawn_killer_clown") { SpawnKillerClownStrong(); return; }
         if (slug == "spawn_monkey" || slug == "spawn_angry_chimp") { SpawnAngryChimpWithHatchet(); return; }
+        if (slug == "spawn_rifle_chimp") { SpawnRifleChimp(); return; }
         if (slug == "spawn_poodle") { SpawnAnimalGroup("a_c_poodle", 3, false, "LivePlay GTA: poodles"); return; }
 
         if (slug == "give_rpg") { GiveWeapon("rpg"); return; }
@@ -2392,6 +2690,114 @@ public class LivePlayGtaBridge : Script
         Notify(fires > 0 ? "LivePlay GTA: fogo em volta do personagem" : "LivePlay GTA: " + Pretty(slug));
     }
 
+    private void RegisterNamedPed(Ped ped)
+    {
+        RegisterNamedPed(ped, DefaultNpcOwnerName);
+    }
+
+    private void RegisterNamedPed(Ped ped, string name)
+    {
+        try
+        {
+            if (ped == null || !ped.Exists()) return;
+
+            string safeName = SanitizeNpcOwnerName(name);
+            for (int i = _namedPeds.Count - 1; i >= 0; i--)
+            {
+                NamedPed current = _namedPeds[i];
+                if (current == null || current.Ped == null || !current.Ped.Exists())
+                {
+                    _namedPeds.RemoveAt(i);
+                    continue;
+                }
+
+                if (current.Ped.Handle == ped.Handle)
+                {
+                    current.Name = safeName;
+                    return;
+                }
+            }
+
+            _namedPeds.Add(new NamedPed { Ped = ped, Name = safeName });
+        }
+        catch { }
+    }
+
+    private static string SanitizeNpcOwnerName(string value)
+    {
+        string name = String.IsNullOrWhiteSpace(value) ? DefaultNpcOwnerName : value.Trim();
+        name = Regex.Replace(name, "[\\r\\n\\t]+", " ");
+        name = Regex.Replace(name, "\\s+", " ").Trim();
+        if (name.Length > 18) name = name.Substring(0, 18);
+        return String.IsNullOrWhiteSpace(name) ? DefaultNpcOwnerName : name;
+    }
+
+    private void MaintainNamedPeds()
+    {
+        if (_namedPeds.Count == 0) return;
+
+        Ped player = null;
+        try { player = Game.Player.Character; } catch { player = null; }
+
+        for (int i = _namedPeds.Count - 1; i >= 0; i--)
+        {
+            NamedPed namedPed = _namedPeds[i];
+            if (namedPed == null || namedPed.Ped == null || !namedPed.Ped.Exists())
+            {
+                _namedPeds.RemoveAt(i);
+                continue;
+            }
+
+            bool dead = false;
+            try { dead = namedPed.Ped.IsDead || namedPed.Ped.Health <= 0; } catch { }
+            if (dead)
+            {
+                _namedPeds.RemoveAt(i);
+                continue;
+            }
+
+            if (player != null && player.Exists())
+            {
+                float distance = 9999f;
+                try { distance = DistanceBetween(player.Position, namedPed.Ped.Position); } catch { }
+                if (distance > NamedPedDrawDistance) continue;
+            }
+
+            try
+            {
+                Vector3 labelPos = namedPed.Ped.Position + new Vector3(0f, 0f, 1.18f);
+                DrawNpcName3D(labelPos, namedPed.Name);
+            }
+            catch { }
+        }
+    }
+
+    private void DrawNpcName3D(Vector3 worldPos, string text)
+    {
+        try
+        {
+            OutputArgument screenX = new OutputArgument();
+            OutputArgument screenY = new OutputArgument();
+            bool onScreen = Function.Call<bool>(unchecked((Hash)0x34E82F05DF2974F5), worldPos.X, worldPos.Y, worldPos.Z, screenX, screenY); // GET_SCREEN_COORD_FROM_WORLD_COORD
+            if (!onScreen) return;
+
+            float x = screenX.GetResult<float>();
+            float y = screenY.GetResult<float>();
+            string label = SanitizeNpcOwnerName(text);
+
+            Function.Call(Hash.SET_TEXT_FONT, 7);
+            Function.Call(Hash.SET_TEXT_SCALE, 0.0f, 0.34f);
+            Function.Call(Hash.SET_TEXT_COLOUR, 80, 220, 255, 245);
+            Function.Call(Hash.SET_TEXT_CENTRE, true);
+            Function.Call(Hash.SET_TEXT_OUTLINE);
+            Function.Call(Hash.SET_TEXT_DROPSHADOW, 1, 0, 0, 0, 190);
+            Function.Call(Hash.BEGIN_TEXT_COMMAND_DISPLAY_TEXT, "STRING");
+            Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, label);
+            Function.Call(Hash.END_TEXT_COMMAND_DISPLAY_TEXT, x, y);
+        }
+        catch { }
+    }
+
     private static void Notify(string message)
     {
         try { GTA.UI.Screen.ShowSubtitle(message, 2500); } catch { }
@@ -2416,6 +2822,7 @@ public class LivePlayGtaBridge : Script
         try { Function.Call(Hash.DISPLAY_HUD, true); } catch { }
         try { Function.Call(Hash.DISPLAY_RADAR, true); } catch { }
         try { Function.Call(Hash.SET_ARTIFICIAL_LIGHTS_STATE, false); } catch { }
+        try { _namedPeds.Clear(); } catch { }
         try { if (_listener != null) _listener.Stop(); } catch { }
     }
 
