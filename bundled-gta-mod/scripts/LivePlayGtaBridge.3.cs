@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -41,6 +42,18 @@ public class LivePlayGtaBridge : Script
     private int _earthquakeNextPulseGameTime = 0;
     private int _meteorUntilGameTime = 0;
     private int _meteorNextDropGameTime = 0;
+    private readonly List<Ped> _explosiveZombies = new List<Ped>();
+    private int _explosiveZombiesUntilGameTime = 0;
+    private int _explosiveZombieNextSpawnGameTime = 0;
+    private bool _explosiveZombiesNightActive = false;
+    private int _explosiveZombiesRestoreHour = 12;
+    private int _explosiveZombiesRestoreMinute = 0;
+    private int _explosiveZombiesRestoreSecond = 0;
+    private const int ExplosiveZombiesDurationMs = 32000;
+    private const int ExplosiveZombiesMaxActive = 18;
+    private const int ExplosiveZombiesInitialWave = 8;
+    private const int ExplosiveZombiesSpawnIntervalMs = 900;
+    private const int ExplosiveZombiesSpawnPerWave = 2;
     private static readonly Random _random = new Random();
     private static readonly Vector3[] _randomTeleportGroundLocations = new Vector3[]
     {
@@ -391,6 +404,8 @@ public class LivePlayGtaBridge : Script
                     _blackHoleNextPulseGameTime = Game.GameTime + 160;
                 }
             }
+
+            MaintainExplosiveZombies();
         }
         catch { }
     }
@@ -412,6 +427,7 @@ public class LivePlayGtaBridge : Script
         if (normalized.StartsWith("wanted")) { int level = Clamp(ParseInt(Arg(command, 1, "1"), 1), 0, 5); Game.Player.WantedLevel = level; Notify("LivePlay: wanted " + level); return; }
         if (normalized.StartsWith("clear_wanted")) { Game.Player.WantedLevel = 0; Notify("LivePlay: polícia limpa"); return; }
         if (normalized.StartsWith("explosion_ring")) { ExplosionRing(); return; }
+        if (normalized.StartsWith("explosive_zombies")) { StartExplosiveZombies(); return; }
         if (normalized.StartsWith("explode")) { ExplodeFront(); return; }
         if (normalized.StartsWith("spawn_moto_cops")) { SpawnMotoGroup("s_m_y_cop_01", true, 2, "LivePlay: moto cops"); return; }
         if (normalized.StartsWith("spawn_moto_bandits")) { SpawnMotoGroup("g_m_y_lost_01", true, 2, "LivePlay: moto bandidos"); return; }
@@ -442,6 +458,183 @@ public class LivePlayGtaBridge : Script
         return int.TryParse(value, out parsed) ? parsed : fallback;
     }
     private static int Clamp(int value, int min, int max) { if (value < min) return min; if (value > max) return max; return value; }
+
+
+    private void StartExplosiveZombies()
+    {
+        _explosiveZombiesUntilGameTime = Game.GameTime + ExplosiveZombiesDurationMs;
+        _explosiveZombieNextSpawnGameTime = 0;
+        CleanupExplosiveZombies(false);
+        StartExplosiveZombieNight();
+
+        for (int i = 0; i < ExplosiveZombiesInitialWave; i++) SpawnExplosiveZombie(i);
+
+        try { Interval = 50; } catch { }
+        Notify("LivePlay GTA: invasão de zumbis explosivos por 32s");
+    }
+
+    private void StartExplosiveZombieNight()
+    {
+        try { _explosiveZombiesRestoreHour = Clamp(Function.Call<int>(Hash.GET_CLOCK_HOURS), 0, 23); } catch { _explosiveZombiesRestoreHour = 12; }
+        try { _explosiveZombiesRestoreMinute = Clamp(Function.Call<int>(Hash.GET_CLOCK_MINUTES), 0, 59); } catch { _explosiveZombiesRestoreMinute = 0; }
+        try { _explosiveZombiesRestoreSecond = Clamp(Function.Call<int>(Hash.GET_CLOCK_SECONDS), 0, 59); } catch { _explosiveZombiesRestoreSecond = 0; }
+
+        _explosiveZombiesNightActive = true;
+        ApplyExplosiveZombieNight();
+    }
+
+    private void ApplyExplosiveZombieNight()
+    {
+        try { Function.Call(Hash.NETWORK_OVERRIDE_CLOCK_TIME, 0, 0, 0); } catch { }
+        try { Function.Call(Hash.SET_WEATHER_TYPE_NOW_PERSIST, "THUNDER"); } catch { }
+    }
+
+    private void StopExplosiveZombieNight()
+    {
+        if (!_explosiveZombiesNightActive) return;
+
+        try { Function.Call(Hash.NETWORK_OVERRIDE_CLOCK_TIME, _explosiveZombiesRestoreHour, _explosiveZombiesRestoreMinute, _explosiveZombiesRestoreSecond); } catch { }
+        try { Function.Call(Hash.SET_WEATHER_TYPE_NOW_PERSIST, "CLEAR"); } catch { }
+        _explosiveZombiesNightActive = false;
+    }
+
+    private void MaintainExplosiveZombies()
+    {
+        if (_explosiveZombiesUntilGameTime <= 0 && _explosiveZombies.Count == 0)
+        {
+            StopExplosiveZombieNight();
+            return;
+        }
+
+        Ped player = Game.Player.Character;
+        if (player == null || !player.Exists())
+        {
+            CleanupExplosiveZombies(false);
+            _explosiveZombiesUntilGameTime = 0;
+            StopExplosiveZombieNight();
+            return;
+        }
+
+        if (_explosiveZombiesNightActive) ApplyExplosiveZombieNight();
+
+        for (int i = _explosiveZombies.Count - 1; i >= 0; i--)
+        {
+            Ped zombie = _explosiveZombies[i];
+            if (zombie == null || !zombie.Exists())
+            {
+                _explosiveZombies.RemoveAt(i);
+                continue;
+            }
+
+            bool shouldExplode = false;
+            try { if (zombie.IsDead || zombie.Health <= 0) shouldExplode = true; } catch { }
+            try { if (!shouldExplode && zombie.Health < zombie.MaxHealth - 3) shouldExplode = true; } catch { }
+            try { if (!shouldExplode && zombie.Position.DistanceTo(player.Position) <= 2.2f) shouldExplode = true; } catch { }
+
+            if (shouldExplode)
+            {
+                ExplodeZombie(zombie);
+                _explosiveZombies.RemoveAt(i);
+                continue;
+            }
+
+            try
+            {
+                if (Game.GameTime % 520 < 70)
+                {
+                    Function.Call(Hash.TASK_COMBAT_PED, zombie.Handle, player.Handle, 0, 16);
+                    Function.Call(Hash.SET_PED_KEEP_TASK, zombie.Handle, true);
+                }
+            }
+            catch { }
+        }
+
+        if (Game.GameTime <= _explosiveZombiesUntilGameTime)
+        {
+            if (Game.GameTime >= _explosiveZombieNextSpawnGameTime && _explosiveZombies.Count < ExplosiveZombiesMaxActive)
+            {
+                int freeSlots = Math.Max(0, ExplosiveZombiesMaxActive - _explosiveZombies.Count);
+                int waveCount = Math.Min(ExplosiveZombiesSpawnPerWave, freeSlots);
+                for (int i = 0; i < waveCount; i++) SpawnExplosiveZombie(_explosiveZombies.Count + i);
+                _explosiveZombieNextSpawnGameTime = Game.GameTime + ExplosiveZombiesSpawnIntervalMs;
+            }
+        }
+        else if (_explosiveZombies.Count == 0)
+        {
+            _explosiveZombiesUntilGameTime = 0;
+            _explosiveZombieNextSpawnGameTime = 0;
+            StopExplosiveZombieNight();
+            try { Interval = 100; } catch { }
+            Notify("LivePlay GTA: invasão de zumbis encerrada");
+        }
+    }
+
+    private void SpawnExplosiveZombie(int index)
+    {
+        Ped player = Game.Player.Character;
+        if (player == null || !player.Exists()) return;
+
+        // Usa somente o modelo zumbi nativo do GTA V. Sem fallback para ped normal.
+        Model model = new Model("u_m_y_zombie_01");
+        model.Request(1200);
+        if (!model.IsLoaded)
+        {
+            try { model.MarkAsNoLongerNeeded(); } catch { }
+            return;
+        }
+
+        Vector3 side = player.RightVector * RandomFloat(-9.0f, 9.0f);
+        Vector3 front = player.ForwardVector * RandomFloat(10.0f, 18.0f);
+        Vector3 pos = player.Position + front + side;
+        try { pos = World.GetNextPositionOnStreet(pos); } catch { }
+
+        Ped zombie = World.CreatePed(model, pos, player.Heading + 180f);
+        model.MarkAsNoLongerNeeded();
+        if (zombie == null || !zombie.Exists()) return;
+
+        try { Function.Call(Hash.SET_PED_DEFAULT_COMPONENT_VARIATION, zombie.Handle); } catch { }
+        try { zombie.MaxHealth = 155; } catch { }
+        try { Function.Call(Hash.SET_ENTITY_MAX_HEALTH, zombie.Handle, 155); } catch { }
+        try { zombie.Health = 155; } catch { }
+        try { Function.Call(Hash.SET_ENTITY_HEALTH, zombie.Handle, 155); } catch { }
+        try { Function.Call(Hash.SET_PED_SUFFERS_CRITICAL_HITS, zombie.Handle, false); } catch { }
+        try { Function.Call(Hash.SET_PED_DIES_WHEN_INJURED, zombie.Handle, false); } catch { }
+        try { Function.Call(Hash.SET_BLOCKING_OF_NON_TEMPORARY_EVENTS, zombie.Handle, true); } catch { }
+        try { Function.Call(Hash.SET_PED_FLEE_ATTRIBUTES, zombie.Handle, 0, false); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_ABILITY, zombie.Handle, 2); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_MOVEMENT, zombie.Handle, 3); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_RANGE, zombie.Handle, 0); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_ATTRIBUTES, zombie.Handle, 5, true); } catch { }
+        try { Function.Call(Hash.SET_PED_COMBAT_ATTRIBUTES, zombie.Handle, 46, true); } catch { }
+        try { Function.Call(Hash.SET_PED_AS_ENEMY, zombie.Handle, true); } catch { }
+        try { zombie.Weapons.Give(WeaponHash.Knife, 1, true, true); } catch { }
+        try { Function.Call(Hash.TASK_COMBAT_PED, zombie.Handle, player.Handle, 0, 16); } catch { }
+        try { Function.Call(Hash.SET_PED_KEEP_TASK, zombie.Handle, true); } catch { }
+
+        _explosiveZombies.Add(zombie);
+    }
+
+    private void ExplodeZombie(Ped zombie)
+    {
+        if (zombie == null || !zombie.Exists()) return;
+        Vector3 pos = zombie.Position;
+        try { World.AddExplosion(pos, ExplosionType.Grenade, 5.6f, 1.0f); } catch { }
+        try { zombie.Delete(); } catch { }
+    }
+
+    private void CleanupExplosiveZombies(bool explode)
+    {
+        for (int i = _explosiveZombies.Count - 1; i >= 0; i--)
+        {
+            Ped zombie = _explosiveZombies[i];
+            if (zombie != null && zombie.Exists())
+            {
+                if (explode) ExplodeZombie(zombie);
+                else { try { zombie.Delete(); } catch { } }
+            }
+        }
+        _explosiveZombies.Clear();
+    }
 
     private void SpawnVehicle(string modelName)
     {
@@ -1437,6 +1630,7 @@ public class LivePlayGtaBridge : Script
         if (slug == "random_vehicle_part_tuning") { TuneCurrentVehicle(false); return; }
 
         if (slug == "spawn_attackers") { SpawnMixedKnifeAndPistolAttackers(); return; }
+        if (slug == "explosive_zombies") { StartExplosiveZombies(); return; }
         if (slug == "spawn_armed_attackers") { SpawnAttackers("g_m_y_lost_01", 2, true, WeaponHash.Pistol, true, "LivePlay GTA: 2 inimigos com pistola"); return; }
         if (slug == "spawn_angry_cop") { SpawnAttackers("s_m_y_cop_01", 1, true, WeaponHash.Pistol, true, "LivePlay GTA: policial agressivo"); return; }
         if (slug == "spawn_extreme_angry_cop") { SpawnExtremeAngryCopStrong(); return; }
