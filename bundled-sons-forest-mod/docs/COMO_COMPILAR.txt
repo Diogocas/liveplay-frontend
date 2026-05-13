@@ -1,0 +1,18 @@
+1) Copie LivePlaySonsForestBridge.cs e LivePlaySonsForestBridge.csproj para:
+   C:\Users\diogo\OneDrive\Desktop\LivePlaySonsForestBridgeBuild
+
+2) No PowerShell dentro dessa pasta, rode:
+   dotnet clean
+   dotnet build -c Release
+
+3) Copie a DLL gerada de:
+   bin\Release\net6.0\LivePlaySonsForestBridge.dll
+
+4) Para teste direto no jogo, coloque em:
+   G:\Program Files (x86)\Steam\steamapps\common\Sons Of The Forest\BepInEx\plugins\LivePlaySonsForestBridge.dll
+
+5) Para o instalador do LivePlay copiar automaticamente no futuro, coloque também em:
+   C:\Users\diogo\OneDrive\Desktop\LivePlays\public\bundled-sons-forest-mod\plugins\LivePlaySonsForestBridge.dll
+
+6) Abra o jogo e confira no BepInEx\LogOutput.log se aparece:
+   LivePlay Sons Forest Bridge ativo na porta 35952

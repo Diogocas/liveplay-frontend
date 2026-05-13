@@ -1,0 +1,10 @@
+{
+  "name": "LivePlay Sons Forest Bridge",
+  "gameId": "sons-forest",
+  "bridgeVersion": "0.2.0",
+  "bridgePort": 35952,
+  "loader": "BepInEx 6 IL2CPP x64",
+  "bepInExBuild": "BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.755+3fab71a",
+  "isolated": true,
+  "notes": "Integração isolada do LivePlay para Sons Of The Forest. Não depende de GTA nem Minecraft."
+}
