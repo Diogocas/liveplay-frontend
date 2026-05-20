@@ -19,12 +19,39 @@ public class LivePlayGtaBridge : Script
         public string Name;
     }
 
+    private sealed class GameChatLine
+    {
+        public string Text;
+        public int ExpiresAtGameTime;
+    }
+
     private readonly List<NamedPed> _namedPeds = new List<NamedPed>();
+    private readonly List<GameChatLine> _gameChatLines = new List<GameChatLine>();
+    private const int GameChatMaxLines = 6;
+    private const int GameChatDurationMs = 11000;
     private const string DefaultNpcOwnerName = "LivePlay";
     private const float NamedPedDrawDistance = 65.0f;
     private const int LogicTickIntervalMs = 50;
     private int _nextLogicTickGameTime = 0;
     private readonly ConcurrentQueue<string> _commands = new ConcurrentQueue<string>();
+    private readonly Dictionary<string, Queue<string>> _timedEffectQueues = new Dictionary<string, Queue<string>>(StringComparer.OrdinalIgnoreCase);
+    private static readonly string[] TimedEffectQueueKeys = new[]
+    {
+        "invincible",
+        "night_vision",
+        "heat_vision",
+        "no_hud",
+        "no_radar",
+        "blackout",
+        "need_for_speed",
+        "black_hole",
+        "super_jump",
+        "drunk",
+        "earthquake",
+        "meteor_shower",
+        "invisible_vehicles",
+        "explosive_zombies"
+    };
     private TcpListener _listener;
     private Thread _serverThread;
     private bool _running;
@@ -290,6 +317,7 @@ public class LivePlayGtaBridge : Script
     private void MaintainFrameVisuals()
     {
         try { MaintainNamedPeds(); } catch { }
+        try { DrawGameChatLines(); } catch { }
         try
         {
             if (_blackHoleUntilGameTime > 0 && Game.GameTime <= _blackHoleUntilGameTime) DrawBlackHoleVisual();
@@ -464,14 +492,204 @@ public class LivePlayGtaBridge : Script
 
             MaintainInvisibleVehicles();
             MaintainExplosiveZombies();
+            ProcessTimedEffectQueues();
         }
         catch { }
+    }
+
+    private bool TryHandleTimedEffectCommand(string command)
+    {
+        string key = GetTimedEffectKey(command);
+        if (string.IsNullOrWhiteSpace(key)) return false;
+
+        if (IsTimedEffectActive(key))
+        {
+            EnqueueTimedEffect(key, command);
+            return true;
+        }
+
+        ExecuteTimedEffectByKey(key);
+        return true;
+    }
+
+    private string GetTimedEffectKey(string command)
+    {
+        string normalized = (command ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized)) return string.Empty;
+
+        string slug = normalized;
+        if (slug.StartsWith("lp "))
+        {
+            slug = NormalizeSlug(slug.Substring(3).Trim());
+        }
+        else
+        {
+            string[] parts = slug.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            slug = NormalizeSlug(parts.Length > 0 ? parts[0] : slug);
+        }
+
+        if (slug == "blackout_off") return string.Empty;
+        if (slug == "invincible" || slug.Contains("invincibility") || slug.Contains("immortality")) return "invincible";
+        if (slug == "night_vision") return "night_vision";
+        if (slug == "heat_vision") return "heat_vision";
+        if (slug == "no_hud") return "no_hud";
+        if (slug == "no_radar") return "no_radar";
+        if (slug == "blackout_on" || slug == "blackout") return "blackout";
+        if (slug == "need_for_speed") return "need_for_speed";
+        if (slug == "black_hole" || slug == "fake_black_hole" || slug == "gravity_sphere" || slug == "gravity_field") return "black_hole";
+        if (slug == "super_jump" || slug.Contains("super_jump")) return "super_jump";
+        if (slug == "drunk" || slug.Contains("drunk") || slug.Contains("sick") || slug.Contains("lsd")) return "drunk";
+        if (slug == "earthquake" || slug.Contains("earthquake") || slug.Contains("tremor") || slug.Contains("quake")) return "earthquake";
+        if (slug == "meteor_shower" || slug.Contains("meteor")) return "meteor_shower";
+        if (slug == "invisible_vehicles") return "invisible_vehicles";
+        if (slug == "explosive_zombies") return "explosive_zombies";
+
+        return string.Empty;
+    }
+
+    private bool IsTimedEffectActive(string key)
+    {
+        int now = Game.GameTime;
+        switch (key)
+        {
+            case "invincible":
+                return _invincibleUntilGameTime > now;
+            case "night_vision":
+                return _nightVisionUntilGameTime > now;
+            case "heat_vision":
+                return _heatVisionUntilGameTime > now;
+            case "no_hud":
+                return _hudHiddenUntilGameTime > now || _radarHiddenUntilGameTime > now;
+            case "no_radar":
+                return _radarHiddenUntilGameTime > now;
+            case "blackout":
+                return _blackoutUntilGameTime > now;
+            case "need_for_speed":
+                return _needForSpeedUntilGameTime > now;
+            case "black_hole":
+                return _blackHoleUntilGameTime > now;
+            case "super_jump":
+                return _superJumpUntilGameTime > now;
+            case "drunk":
+                return _drunkUntilGameTime > now;
+            case "earthquake":
+                return _earthquakeUntilGameTime > now;
+            case "meteor_shower":
+                return _meteorUntilGameTime > now;
+            case "invisible_vehicles":
+                return _invisibleVehiclesUntilGameTime > now;
+            case "explosive_zombies":
+                return _explosiveZombiesUntilGameTime > now || _explosiveZombies.Count > 0 || _explosiveZombiesNightActive;
+            default:
+                return false;
+        }
+    }
+
+    private void EnqueueTimedEffect(string key, string command)
+    {
+        Queue<string> queue;
+        if (!_timedEffectQueues.TryGetValue(key, out queue))
+        {
+            queue = new Queue<string>();
+            _timedEffectQueues[key] = queue;
+        }
+
+        queue.Enqueue(command ?? string.Empty);
+        Notify("LivePlay GTA: efeito na fila (" + FormatTimedEffectName(key) + ") x" + queue.Count);
+    }
+
+    private void ProcessTimedEffectQueues()
+    {
+        foreach (string key in TimedEffectQueueKeys)
+        {
+            if (IsTimedEffectActive(key)) continue;
+
+            Queue<string> queue;
+            if (!_timedEffectQueues.TryGetValue(key, out queue) || queue.Count == 0) continue;
+
+            queue.Dequeue();
+            ExecuteTimedEffectByKey(key);
+        }
+    }
+
+    private void ExecuteTimedEffectByKey(string key)
+    {
+        switch (key)
+        {
+            case "invincible":
+                InvinciblePlayer();
+                return;
+            case "night_vision":
+                StartNightVision();
+                return;
+            case "heat_vision":
+                StartHeatVision();
+                return;
+            case "no_hud":
+                HideHudTimed();
+                return;
+            case "no_radar":
+                HideRadarTimed();
+                return;
+            case "blackout":
+                StartBlackout();
+                return;
+            case "need_for_speed":
+                NeedForSpeed();
+                return;
+            case "black_hole":
+                BlackHole();
+                return;
+            case "super_jump":
+                SuperJump();
+                return;
+            case "drunk":
+                Drunk();
+                return;
+            case "earthquake":
+                Earthquake();
+                return;
+            case "meteor_shower":
+                MeteorShower();
+                return;
+            case "invisible_vehicles":
+                InvisibleVehicles();
+                return;
+            case "explosive_zombies":
+                StartExplosiveZombies();
+                return;
+        }
+    }
+
+    private static string FormatTimedEffectName(string key)
+    {
+        switch (key)
+        {
+            case "invincible": return "Invencível";
+            case "night_vision": return "Visão noturna";
+            case "heat_vision": return "Visão térmica";
+            case "no_hud": return "HUD oculto";
+            case "no_radar": return "Radar oculto";
+            case "blackout": return "Blackout";
+            case "need_for_speed": return "Need For Speed";
+            case "black_hole": return "Black Hole";
+            case "super_jump": return "Super Jump";
+            case "drunk": return "Bêbado";
+            case "earthquake": return "Terremoto";
+            case "meteor_shower": return "Meteoros";
+            case "invisible_vehicles": return "Veículos invisíveis";
+            case "explosive_zombies": return "Zumbis explosivos";
+            default: return key;
+        }
     }
 
     private void ExecuteLivePlayCommand(string command)
     {
         string normalized = (command ?? "").Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(normalized)) return;
+
+        if (TryHandleGameChatCommand(command)) return;
+        if (TryHandleTimedEffectCommand(command)) return;
 
         if (normalized.StartsWith("lp ")) { ExecuteLivePlayEffectSlug(normalized.Substring(3).Trim()); return; }
         if (normalized.StartsWith("earthquake")) { Earthquake(); return; }
@@ -505,6 +723,121 @@ public class LivePlayGtaBridge : Script
         if (normalized.StartsWith("blackout_off")) { StopBlackout(); return; }
 
         Notify("LivePlay comando desconhecido: " + command);
+    }
+
+    private bool TryHandleGameChatCommand(string command)
+    {
+        string raw = (command ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+
+        string lower = raw.ToLowerInvariant();
+        string message = string.Empty;
+
+        if (lower.StartsWith("lp chat ")) message = raw.Substring(8).Trim();
+        else if (lower == "lp chat") message = "Mensagem de teste do LivePlay";
+        else if (lower.StartsWith("lp_chat ")) message = raw.Substring(8).Trim();
+        else if (lower == "lp_chat") message = "Mensagem de teste do LivePlay";
+        else if (lower.StartsWith("gta:chat ")) message = raw.Substring(9).Trim();
+        else if (lower == "gta:chat") message = "Mensagem de teste do LivePlay";
+        else if (lower.StartsWith("chat ")) message = raw.Substring(5).Trim();
+        else return false;
+
+        ShowGameChatMessage(message);
+        return true;
+    }
+
+    private void ShowGameChatMessage(string message)
+    {
+        AddGameChatMessage(message);
+    }
+
+    private void AddGameChatMessage(string message)
+    {
+        string safe = SanitizeGameChatMessage(message);
+        if (string.IsNullOrWhiteSpace(safe)) safe = "Mensagem de teste do LivePlay";
+
+        int now = Game.GameTime;
+        for (int i = _gameChatLines.Count - 1; i >= 0; i--)
+        {
+            if (_gameChatLines[i] == null || _gameChatLines[i].ExpiresAtGameTime <= now)
+            {
+                _gameChatLines.RemoveAt(i);
+            }
+        }
+
+        _gameChatLines.Add(new GameChatLine
+        {
+            Text = safe,
+            ExpiresAtGameTime = now + GameChatDurationMs
+        });
+
+        while (_gameChatLines.Count > GameChatMaxLines)
+        {
+            _gameChatLines.RemoveAt(0);
+        }
+    }
+
+
+    private void DrawGameChatLines()
+    {
+        if (_gameChatLines.Count == 0) return;
+
+        int now = Game.GameTime;
+        for (int i = _gameChatLines.Count - 1; i >= 0; i--)
+        {
+            if (_gameChatLines[i] == null || _gameChatLines[i].ExpiresAtGameTime <= now)
+            {
+                _gameChatLines.RemoveAt(i);
+            }
+        }
+
+        if (_gameChatLines.Count == 0) return;
+
+        float x = 0.004f;
+        float bottomY = 0.780f;
+        float lineHeight = 0.022f;
+        float width = 0.235f;
+        float paddingY = 0.007f;
+        float boxHeight = (_gameChatLines.Count * lineHeight) + (paddingY * 2f);
+        float topY = bottomY - boxHeight;
+
+        Function.Call(Hash.DRAW_RECT, x + width / 2f, topY + boxHeight / 2f, width, boxHeight, 0, 0, 0, 105);
+
+        float y = topY + paddingY;
+        for (int i = 0; i < _gameChatLines.Count; i++)
+        {
+            string text = _gameChatLines[i] != null ? _gameChatLines[i].Text : string.Empty;
+            DrawGameChatText(text, x + 0.006f, y, 0.235f, 255, 255, 255, 238, false);
+            y += lineHeight;
+        }
+    }
+
+
+
+    private static void DrawGameChatText(string text, float x, float y, float scale, int r, int g, int b, int a, bool header)
+    {
+        string safe = SanitizeGameChatMessage(text);
+        if (safe.Length > 96) safe = safe.Substring(0, 96) + "...";
+
+        Function.Call(Hash.SET_TEXT_FONT, 0);
+        Function.Call(Hash.SET_TEXT_SCALE, 0.0f, scale);
+        Function.Call(Hash.SET_TEXT_COLOUR, r, g, b, a);
+        Function.Call(Hash.SET_TEXT_OUTLINE);
+        Function.Call(Hash.SET_TEXT_DROPSHADOW, 1, 0, 0, 0, 200);
+        Function.Call(Hash.SET_TEXT_WRAP, x, x + 0.220f);
+        Function.Call(Hash.BEGIN_TEXT_COMMAND_DISPLAY_TEXT, "STRING");
+        Function.Call(Hash.ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, safe);
+        Function.Call(Hash.END_TEXT_COMMAND_DISPLAY_TEXT, x, y);
+    }
+
+
+    private static string SanitizeGameChatMessage(string value)
+    {
+        string text = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+        text = Regex.Replace(text, @"[\r\n\t]+", " ");
+        text = Regex.Replace(text, @"\s+", " ").Trim();
+        if (text.Length > 140) text = text.Substring(0, 140);
+        return text;
     }
 
     private static string Arg(string command, int index, string fallback)

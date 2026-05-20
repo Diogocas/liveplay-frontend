@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>LivePlayGreenHellBridge</AssemblyName>
+    <RootNamespace>LivePlayGreenHellBridge</RootNamespace>
+    <Version>0.1.26</Version>
+    <AssemblyVersion>0.1.26.0</AssemblyVersion>
+    <FileVersion>0.1.26.0</FileVersion>
+    <InformationalVersion>0.1.26</InformationalVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>_refs\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>_refs\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule" Condition="Exists('_refs\UnityEngine.CoreModule.dll')">
+      <HintPath>_refs\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule" Condition="Exists('_refs\UnityEngine.IMGUIModule.dll')">
+      <HintPath>_refs\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule" Condition="Exists('_refs\UnityEngine.PhysicsModule.dll')">
+      <HintPath>_refs\UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule" Condition="Exists('_refs\UnityEngine.AnimationModule.dll')">
+      <HintPath>_refs\UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
+

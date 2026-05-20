@@ -1,0 +1,15 @@
+{
+  "name": "LivePlay Green Hell Bridge",
+  "gameId": "green-hell",
+  "bridgePort": 35953,
+  "bridgeVersion": "0.1.2",
+  "bridgeSha256": "5e753e513123ac78c0307471dd1ea8db83648c964826d2e7db23acd7081fb97e",
+  "loader": "BepInEx 5 Mono x64",
+  "bepInExVersion": "5.4.23.2",
+  "bundledBepInEx": true,
+  "note": "Integração base do LivePlay para Green Hell com BepInEx e DLL do bridge embutidos. Metadados sincronizados com a DLL 0.1.2.",
+  "sourceStatus": "reference_snapshot",
+  "sourceNote": "A DLL empacotada é a referência executável. O source incluído é material auxiliar de referência e não deve substituir a DLL sem recompilação/teste.",
+  "sourceSnapshotVersion": "0.1.2-source-snapshot",
+  "sourceSnapshotNote": "O source incluído é um snapshot auxiliar com versionamento sincronizado, mas a DLL empacotada continua sendo a referência executável."
+}
