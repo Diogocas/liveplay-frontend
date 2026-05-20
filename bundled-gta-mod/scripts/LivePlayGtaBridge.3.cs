@@ -25,6 +25,12 @@ public class LivePlayGtaBridge : Script
         public int ExpiresAtGameTime;
     }
 
+    private sealed class LivePlayCommand
+    {
+        public string Command;
+        public string OwnerName;
+    }
+
     private readonly List<NamedPed> _namedPeds = new List<NamedPed>();
     private readonly List<GameChatLine> _gameChatLines = new List<GameChatLine>();
     private const int GameChatMaxLines = 6;
@@ -33,7 +39,8 @@ public class LivePlayGtaBridge : Script
     private const float NamedPedDrawDistance = 65.0f;
     private const int LogicTickIntervalMs = 50;
     private int _nextLogicTickGameTime = 0;
-    private readonly ConcurrentQueue<string> _commands = new ConcurrentQueue<string>();
+    private string _currentNpcOwnerName = DefaultNpcOwnerName;
+    private readonly ConcurrentQueue<LivePlayCommand> _commands = new ConcurrentQueue<LivePlayCommand>();
     private readonly Dictionary<string, Queue<string>> _timedEffectQueues = new Dictionary<string, Queue<string>>(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] TimedEffectQueueKeys = new[]
     {
@@ -220,13 +227,20 @@ public class LivePlayGtaBridge : Script
                     return;
                 }
 
+                string ownerName = ExtractViewerNameFromJson(body);
+                if (string.IsNullOrWhiteSpace(ownerName)) ownerName = DefaultNpcOwnerName;
+
                 if (!_bridgeConnected)
                 {
                     _bridgeConnected = true;
                     _pendingAppConnectedNotify = true;
                 }
 
-                _commands.Enqueue(command.Trim());
+                _commands.Enqueue(new LivePlayCommand
+                {
+                    Command = command.Trim(),
+                    OwnerName = SanitizeNpcOwnerName(ownerName)
+                });
                 WriteHttp(stream, 200, "queued:" + command.Trim());
             }
             catch (Exception ex)
@@ -280,6 +294,20 @@ public class LivePlayGtaBridge : Script
         return Regex.Unescape(match.Groups[1].Value);
     }
 
+    private static string ExtractViewerNameFromJson(string json)
+    {
+        string viewerName = ExtractJsonString(json, "viewerName");
+        if (!string.IsNullOrWhiteSpace(viewerName)) return viewerName;
+
+        string nickname = ExtractJsonString(json, "nickname");
+        if (!string.IsNullOrWhiteSpace(nickname)) return nickname;
+
+        string username = ExtractJsonString(json, "username");
+        if (!string.IsNullOrWhiteSpace(username)) return username;
+
+        return DefaultNpcOwnerName;
+    }
+
     private static void WriteHttp(NetworkStream stream, int status, string text)
     {
         byte[] body = Encoding.UTF8.GetBytes(text ?? "");
@@ -310,8 +338,20 @@ public class LivePlayGtaBridge : Script
 
         MaintainTimedStates();
         int limit = 10;
-        string command;
-        while (limit-- > 0 && _commands.TryDequeue(out command)) ExecuteLivePlayCommand(command);
+        LivePlayCommand livePlayCommand;
+        while (limit-- > 0 && _commands.TryDequeue(out livePlayCommand))
+        {
+            string previousOwner = _currentNpcOwnerName;
+            try
+            {
+                _currentNpcOwnerName = SanitizeNpcOwnerName(livePlayCommand != null ? livePlayCommand.OwnerName : DefaultNpcOwnerName);
+                ExecuteLivePlayCommand(livePlayCommand != null ? livePlayCommand.Command : string.Empty);
+            }
+            finally
+            {
+                _currentNpcOwnerName = previousOwner;
+            }
+        }
     }
 
     private void MaintainFrameVisuals()
@@ -3025,7 +3065,7 @@ public class LivePlayGtaBridge : Script
 
     private void RegisterNamedPed(Ped ped)
     {
-        RegisterNamedPed(ped, DefaultNpcOwnerName);
+        RegisterNamedPed(ped, _currentNpcOwnerName);
     }
 
     private void RegisterNamedPed(Ped ped, string name)

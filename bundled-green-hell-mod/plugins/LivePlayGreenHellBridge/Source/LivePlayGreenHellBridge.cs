@@ -34,6 +34,9 @@ public sealed class LivePlayGreenHellBridge : BaseUnityPlugin
 
     private readonly ConcurrentQueue<string> _pendingCommands = new ConcurrentQueue<string>();
     private readonly List<GameChatLine> _gameChatLines = new List<GameChatLine>();
+    private readonly Dictionary<string, GameObject> _strictCandidateCache = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, float> _strictCandidateCacheAt = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+    private const float StrictCandidateCacheSeconds = 90f;
     private const int GameChatMaxLines = 6;
     private const float GameChatDurationSeconds = 11f;
     private TcpListener _listener;
@@ -78,7 +81,7 @@ public sealed class LivePlayGreenHellBridge : BaseUnityPlugin
     private void Update()
     {
         int safety = 0;
-        while (safety++ < 8 && _pendingCommands.TryDequeue(out string command))
+        while (safety++ < 3 && _pendingCommands.TryDequeue(out string command))
         {
             ExecuteCommand(command);
         }
@@ -3276,11 +3279,25 @@ private bool TryRunDebugConsoleCommand(string command)
 
     private GameObject FindStrictObjectCandidate(ExtraCommandSpec spec, bool itemMode)
     {
+        string cacheKey = BuildStrictCandidateCacheKey(spec, itemMode);
+        GameObject cached;
+        float cachedAt;
+
+        if (_strictCandidateCache.TryGetValue(cacheKey, out cached) &&
+            _strictCandidateCacheAt.TryGetValue(cacheKey, out cachedAt) &&
+            cached != null &&
+            Time.realtimeSinceStartup - cachedAt <= StrictCandidateCacheSeconds &&
+            ScoreStrictCandidate(cached, spec, itemMode, false) >= 100)
+        {
+            Logger.LogInfo("candidato estrito cache para " + spec.Label + ": " + cached.name + " path=" + SafeGameObjectPath(cached));
+            return cached;
+        }
+
         GameObject best = null;
         int bestScore = int.MinValue;
         HashSet<int> seen = new HashSet<int>();
 
-        Action<GameObject> scan = obj =>
+        Action<GameObject, bool> scan = (obj, deepCheck) =>
         {
             if (obj == null) return;
             try
@@ -3290,7 +3307,7 @@ private bool TryRunDebugConsoleCommand(string command)
             }
             catch { }
 
-            int score = ScoreStrictCandidate(obj, spec, itemMode);
+            int score = ScoreStrictCandidate(obj, spec, itemMode, deepCheck);
             if (score > bestScore)
             {
                 best = obj;
@@ -3298,11 +3315,37 @@ private bool TryRunDebugConsoleCommand(string command)
             }
         };
 
-        try { foreach (GameObject obj in FindObjectsOfType<GameObject>()) scan(obj); } catch { }
-        try { foreach (GameObject obj in Resources.FindObjectsOfTypeAll<GameObject>()) scan(obj); } catch { }
+        try
+        {
+            foreach (GameObject obj in FindObjectsOfType<GameObject>())
+            {
+                scan(obj, true);
+            }
+        }
+        catch { }
 
         if (best != null && bestScore >= 100)
         {
+            _strictCandidateCache[cacheKey] = best;
+            _strictCandidateCacheAt[cacheKey] = Time.realtimeSinceStartup;
+            Logger.LogInfo("candidato estrito selecionado para " + spec.Label + ": " + best.name + " score=" + bestScore + " path=" + SafeGameObjectPath(best));
+            return best;
+        }
+
+        // Resources.FindObjectsOfTypeAll pode ser caro. Usa só como fallback quando a cena atual não achou candidato.
+        try
+        {
+            foreach (GameObject obj in Resources.FindObjectsOfTypeAll<GameObject>())
+            {
+                scan(obj, false);
+            }
+        }
+        catch { }
+
+        if (best != null && bestScore >= 100)
+        {
+            _strictCandidateCache[cacheKey] = best;
+            _strictCandidateCacheAt[cacheKey] = Time.realtimeSinceStartup;
             Logger.LogInfo("candidato estrito selecionado para " + spec.Label + ": " + best.name + " score=" + bestScore + " path=" + SafeGameObjectPath(best));
             return best;
         }
@@ -3312,6 +3355,11 @@ private bool TryRunDebugConsoleCommand(string command)
             Logger.LogWarning("melhor candidato para " + spec.Label + " rejeitado por score baixo: " + best.name + " score=" + bestScore);
         }
         return null;
+    }
+
+    private static string BuildStrictCandidateCacheKey(ExtraCommandSpec spec, bool itemMode)
+    {
+        return (itemMode ? "item:" : "spawn:") + NormalizeForCompare(spec != null ? spec.Label : string.Empty);
     }
 
     private static bool IsLivePlaySpawnedObjectOrChild(GameObject obj)
@@ -3334,7 +3382,7 @@ private bool TryRunDebugConsoleCommand(string command)
     }
 
 
-    private int ScoreStrictCandidate(GameObject obj, ExtraCommandSpec spec, bool itemMode)
+    private int ScoreStrictCandidate(GameObject obj, ExtraCommandSpec spec, bool itemMode, bool deepComponentCheck = true)
     {
         string name = obj.name ?? string.Empty;
         string lower = name.ToLowerInvariant();
@@ -3367,14 +3415,37 @@ private bool TryRunDebugConsoleCommand(string command)
         }
         if (score <= 0) return int.MinValue;
 
-        bool hasUsefulComponent = HasUsefulComponent(obj, itemMode);
+        bool hasUsefulComponent = deepComponentCheck ? HasUsefulComponent(obj, itemMode) : HasUsefulComponentShallow(obj, itemMode);
         if (hasUsefulComponent) score += 35;
-        else score -= 50;
+        else if (deepComponentCheck) score -= 50;
+        else score -= 15;
 
         if (itemMode && (lower.Contains("bed") || lower.Contains("leaf") || lower.Contains("fence") || lower.Contains("wall") || lower.Contains("shell"))) return int.MinValue;
         if (!itemMode && (lower.Contains("shell") || lower.Contains("corpse") || lower.Contains("dead") || lower.Contains("ragdoll"))) return int.MinValue;
 
         return score;
+    }
+
+    private bool HasUsefulComponentShallow(GameObject obj, bool itemMode)
+    {
+        try
+        {
+            foreach (var component in obj.GetComponents<Component>())
+            {
+                if (component == null) continue;
+                string typeName = (component.GetType().FullName ?? component.GetType().Name ?? string.Empty).ToLowerInvariant();
+                if (itemMode)
+                {
+                    if (typeName.Contains("item") || typeName.Contains("pickup") || typeName.Contains("inventory") || typeName.Contains("weapon") || typeName.Contains("tool") || typeName.Contains("edible") || typeName.Contains("food") || typeName.Contains("bandage") || typeName.Contains("dressing")) return true;
+                }
+                else
+                {
+                    if (typeName.Contains("animal") || typeName.Contains("creature") || typeName.Contains("ai") || typeName.Contains("enemy") || typeName.Contains("locomotion") || typeName.Contains("movement")) return true;
+                }
+            }
+        }
+        catch { }
+        return false;
     }
 
     private bool HasUsefulComponent(GameObject obj, bool itemMode)
