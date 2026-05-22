@@ -116,7 +116,7 @@ public sealed class LivePlayGreenHellBridge : BaseUnityPlugin
         if (_titleStyle != null && _messageStyle != null) return;
         _titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 12, richText = false };
         _titleStyle.normal.textColor = new Color(0.75f, 0.95f, 0.75f, 1f);
-        _messageStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, richText = false };
+        _messageStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, richText = false, wordWrap = true };
         _messageStyle.normal.textColor = Color.white;
     }
 
@@ -217,6 +217,11 @@ public sealed class LivePlayGreenHellBridge : BaseUnityPlugin
         if (string.IsNullOrWhiteSpace(actorText)) actorText = "LivePlay:";
         if (string.IsNullOrWhiteSpace(bodyText)) bodyText = "LivePlay Chat";
 
+        if (PrefixShouldBeHiddenForLiveChat(prefixText, actorText))
+        {
+            prefixText = string.Empty;
+        }
+
         float now = Time.realtimeSinceStartup;
         _gameChatLines.RemoveAll(line => line == null || line.ExpiresAt <= now);
         _gameChatLines.Add(new GameChatLine
@@ -245,8 +250,8 @@ public sealed class LivePlayGreenHellBridge : BaseUnityPlugin
         if (_gameChatLines.Count == 0) return;
 
         float width = 520f;
-        float lineHeight = 23f;
-        float labelHeight = 24f;
+        float lineHeight = 42f;
+        float labelHeight = 40f;
         float paddingTop = 8f;
         float paddingBottom = 11f;
         float height = (_gameChatLines.Count * lineHeight) + paddingTop + paddingBottom;
@@ -262,17 +267,21 @@ public sealed class LivePlayGreenHellBridge : BaseUnityPlugin
             if (line == null) continue;
 
             float x = rect.x + 6f;
+            float maxRight = rect.x + rect.width - 12f;
 
-            GUI.color = line.PrefixColor;
-            GUI.Label(new Rect(x, y, rect.width - 12f, labelHeight), line.PrefixText, _messageStyle);
-            x += _messageStyle.CalcSize(new GUIContent(line.PrefixText + " ")).x;
+            if (!string.IsNullOrWhiteSpace(line.PrefixText))
+            {
+                GUI.color = line.PrefixColor;
+                GUI.Label(new Rect(x, y, maxRight - x, labelHeight), line.PrefixText, _messageStyle);
+                x += _messageStyle.CalcSize(new GUIContent(line.PrefixText + " ")).x;
+            }
 
             GUI.color = line.ActorColor;
-            GUI.Label(new Rect(x, y, rect.width - 12f, labelHeight), line.ActorText, _messageStyle);
+            GUI.Label(new Rect(x, y, maxRight - x, labelHeight), line.ActorText, _messageStyle);
             x += _messageStyle.CalcSize(new GUIContent(line.ActorText + " ")).x;
 
             GUI.color = line.MessageColor;
-            GUI.Label(new Rect(x, y, rect.width - 12f, labelHeight), line.MessageText, _messageStyle);
+            GUI.Label(new Rect(x, y, Mathf.Max(80f, maxRight - x), labelHeight), line.MessageText, _messageStyle);
 
             y += lineHeight;
         }
@@ -280,6 +289,21 @@ public sealed class LivePlayGreenHellBridge : BaseUnityPlugin
         GUI.color = old;
     }
 
+
+    private static bool PrefixShouldBeHiddenForLiveChat(string prefixText, string actorText)
+    {
+        string prefix = (prefixText ?? string.Empty).Trim();
+        string actor = (actorText ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(prefix)) return false;
+        if (!string.Equals(prefix, "[LivePlay]", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(prefix, "LivePlay", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !actor.StartsWith("LivePlay", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string SanitizeGameChatMessage(string value)
     {

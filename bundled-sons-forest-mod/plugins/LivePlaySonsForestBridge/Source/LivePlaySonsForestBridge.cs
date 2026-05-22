@@ -39,6 +39,10 @@ public sealed class LivePlaySonsForestBridge : BasePlugin
     private readonly List<LivePlayGameChatLine> _gameChatLines = new List<LivePlayGameChatLine>();
     private GUIStyle? _gameChatTitleStyle;
     private GUIStyle? _gameChatMessageStyle;
+    private Type? _cachedDebugConsoleType;
+    private object? _cachedDebugConsoleInstance;
+    private float _cachedDebugConsoleAt;
+    private const float DebugConsoleCacheSeconds = 25f;
     private const int GameChatMaxLines = 6;
     private const float GameChatDurationSeconds = 11f;
 
@@ -254,7 +258,7 @@ public sealed class LivePlaySonsForestBridge : BasePlugin
     internal void ProcessPendingCommands()
     {
         int safety = 0;
-        while (safety++ < 8 && _pendingCommands.TryDequeue(out PendingLivePlayCommand pending))
+        while (safety++ < 3 && _pendingCommands.TryDequeue(out PendingLivePlayCommand pending))
         {
             ExecuteCommandOnMainThread(pending);
         }
@@ -648,11 +652,61 @@ public sealed class LivePlaySonsForestBridge : BasePlugin
         return false;
     }
 
+    private Type? ResolveDebugConsoleType()
+    {
+        try
+        {
+            if (_cachedDebugConsoleType != null)
+            {
+                return _cachedDebugConsoleType;
+            }
+
+            _cachedDebugConsoleType = FindType("TheForest.DebugConsole") ?? FindType("DebugConsole");
+            return _cachedDebugConsoleType;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private object? ResolveDebugConsoleInstance(Type debugConsoleType)
+    {
+        try
+        {
+            if (_cachedDebugConsoleInstance != null &&
+                Time.realtimeSinceStartup - _cachedDebugConsoleAt <= DebugConsoleCacheSeconds)
+            {
+                return _cachedDebugConsoleInstance;
+            }
+
+            object? console = InvokeStaticNoArgs(debugConsoleType, "GetInstance");
+            if (console == null)
+            {
+                console = FindMonoBehaviourByTypeName("TheForest.DebugConsole") ?? FindMonoBehaviourByShortName("DebugConsole");
+            }
+
+            if (console != null)
+            {
+                _cachedDebugConsoleInstance = console;
+                _cachedDebugConsoleAt = Time.realtimeSinceStartup;
+            }
+
+            return console;
+        }
+        catch
+        {
+            _cachedDebugConsoleInstance = null;
+            _cachedDebugConsoleAt = 0f;
+            return null;
+        }
+    }
+
     private bool TryTheForestDebugConsoleCommand(string consoleCommand, bool allowConsoleInputFallback)
     {
         try
         {
-            Type? debugConsoleType = FindType("TheForest.DebugConsole") ?? FindType("DebugConsole");
+            Type? debugConsoleType = ResolveDebugConsoleType();
             if (debugConsoleType == null)
             {
                 _log?.LogWarning("TheForest.DebugConsole não encontrado nos assemblies carregados.");
@@ -662,12 +716,7 @@ public sealed class LivePlaySonsForestBridge : BasePlugin
             TryInvokeStatic(debugConsoleType, "SetCheatsAllowed", new object[] { true });
             TryInvokeStatic(debugConsoleType, "CheatsAllowedSet", new object[] { true });
 
-            object? console = InvokeStaticNoArgs(debugConsoleType, "GetInstance");
-            if (console == null)
-            {
-                console = FindMonoBehaviourByTypeName("TheForest.DebugConsole") ?? FindMonoBehaviourByShortName("DebugConsole");
-            }
-
+            object? console = ResolveDebugConsoleInstance(debugConsoleType);
             if (console == null)
             {
                 _log?.LogWarning("TheForest.DebugConsole existe, mas nenhuma instância foi encontrada. O menu/jogo talvez ainda não terminou de carregar.");
