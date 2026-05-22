@@ -1,0 +1,13 @@
+{
+  "id": "liveplay-valheim-mod",
+  "game": "valheim",
+  "bridgeVersion": "0.1.0",
+  "mainDll": "plugins/LivePlayValheimBridge.dll",
+  "source": "plugins/LivePlayValheimBridge/Source/LivePlayValheimBridge.cs",
+  "bepInExPack": "denikson-BepInExPack_Valheim-5.4.2333",
+  "bridgeDll": "plugins/LivePlayValheimBridge.dll",
+  "bridgeSource": "plugins/LivePlayValheimBridge/Source/LivePlayValheimBridge.cs",
+  "config": "config/LivePlayValheimBridge.json",
+  "layout": "sons-compatible",
+  "dependenciesRoot": "dependencies/bepinex-root"
+}
