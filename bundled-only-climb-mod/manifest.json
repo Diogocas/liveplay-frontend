@@ -1,0 +1,15 @@
+{
+  "name": "LivePlay Only Climb UE4SS Mod",
+  "gameId": "only-climb",
+  "gameName": "Only Climb: Better Together",
+  "loader": "UE4SS",
+  "version": "1.7.0-no-ragdoll",
+  "bridgeVersion": "1.7.0-no-ragdoll",
+  "bridgePort": 35955,
+  "installRoot": "OnlyClimbTogether/Binaries/Win64",
+  "modFolder": "Mods/LivePlayOnlyClimbHttpMod",
+  "executable": "ocbt.exe",
+  "bridge": "ue4ss-file",
+  "notes": "Comandos reais ampliados: checkpoint, teleporte relativo, vento, tremedeira e giro experimental.",
+  "modVersion": "1.7.0-no-ragdoll"
+}

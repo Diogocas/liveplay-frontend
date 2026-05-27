@@ -1,0 +1,13 @@
+{
+  "name": "LivePlay Only Climb UE4SS Mod",
+  "gameId": "only-climb",
+  "loader": "UE4SS",
+  "port": 35955,
+  "commandPrefix": "oc:",
+  "info": "Pacote organizado para instalar em OnlyClimbTogether/Binaries/Win64/Mods.",
+  "version": "1.7.0-no-ragdoll",
+  "bridge": "ue4ss-file",
+  "notes": "Comandos reais ampliados: checkpoint, teleporte relativo, vento, tremedeira e giro experimental.",
+  "modVersion": "1.7.0-no-ragdoll",
+  "bridgeVersion": "1.7.0-no-ragdoll"
+}

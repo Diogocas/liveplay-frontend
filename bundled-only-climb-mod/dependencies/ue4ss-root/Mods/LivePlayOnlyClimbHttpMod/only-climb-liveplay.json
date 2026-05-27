@@ -1,0 +1,9 @@
+{
+  "name": "LivePlayOnlyClimbHttpMod",
+  "game": "OnlyClimb",
+  "port": 35955,
+  "commandPrefix": "oc:",
+  "version": "1.1.0-safe-no-backup",
+  "bridge": "ue4ss-file",
+  "notes": "Ragdoll seguro, blackout sem movimento, sem processos externos/cmd e sem pasta de backup."
+}
