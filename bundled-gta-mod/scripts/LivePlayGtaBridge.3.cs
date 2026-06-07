@@ -31,6 +31,14 @@ public class LivePlayGtaBridge : Script
         public string OwnerName;
     }
 
+    private sealed class ActiveLightMeteor
+    {
+        public Vector3 Position;
+        public Vector3 Target;
+        public Vector3 Velocity;
+        public int CreatedAtGameTime;
+    }
+
     private readonly List<NamedPed> _namedPeds = new List<NamedPed>();
     private readonly List<GameChatLine> _gameChatLines = new List<GameChatLine>();
     private const int GameChatMaxLines = 6;
@@ -89,6 +97,9 @@ public class LivePlayGtaBridge : Script
     private int _earthquakeNextPulseGameTime = 0;
     private int _meteorUntilGameTime = 0;
     private int _meteorNextDropGameTime = 0;
+    private readonly List<ActiveLightMeteor> _activeLightMeteors = new List<ActiveLightMeteor>();
+    private const int MeteorMaxActive = 12;
+    private const int MeteorFallTimeoutMs = 3800;
     private int _invisibleVehiclesUntilGameTime = 0;
     private readonly List<Vehicle> _invisibleVehicles = new List<Vehicle>();
     private readonly List<Ped> _explosiveZombies = new List<Ped>();
@@ -358,6 +369,7 @@ public class LivePlayGtaBridge : Script
     {
         try { MaintainNamedPeds(); } catch { }
         try { DrawGameChatLines(); } catch { }
+        try { MaintainLightMeteors(); } catch { }
         try
         {
             if (_blackHoleUntilGameTime > 0 && Game.GameTime <= _blackHoleUntilGameTime) DrawBlackHoleVisual();
@@ -444,7 +456,7 @@ public class LivePlayGtaBridge : Script
                 else if (Game.GameTime >= _meteorNextDropGameTime)
                 {
                     DropMeteorColumn();
-                    _meteorNextDropGameTime = Game.GameTime + 420;
+                    _meteorNextDropGameTime = Game.GameTime + 430;
                 }
             }
 
@@ -2870,9 +2882,10 @@ public class LivePlayGtaBridge : Script
 
     private void MeteorShower()
     {
-        _meteorUntilGameTime = Game.GameTime + 9000;
+        _meteorUntilGameTime = Game.GameTime + 16000;
         _meteorNextDropGameTime = 0;
-        for (int i = 0; i < 3; i++) DropMeteorColumn();
+        _activeLightMeteors.Clear();
+        DropMeteorColumn();
         Notify("LivePlay GTA: meteoros caindo do céu");
     }
 
@@ -2883,12 +2896,101 @@ public class LivePlayGtaBridge : Script
             Ped player = Game.Player.Character;
             if (player == null || !player.Exists()) return;
 
-            Vector3 basePos = player.Position + new Vector3(RandomFloat(-95f, 95f), RandomFloat(-95f, 95f), 0f);
+            Vector3 target = player.Position + new Vector3(RandomFloat(-132f, 132f), RandomFloat(-132f, 132f), 0f);
+            float groundZ;
+            if (TryGetGroundZ(target.X, target.Y, out groundZ)) target.Z = groundZ + 0.55f;
+            else target.Z = player.Position.Z + 0.55f;
 
-            // Sequência vertical leve: dá a impressão de queda do céu sem criar objeto pesado nem usar native instável.
-            World.AddExplosion(basePos + new Vector3(0f, 0f, 88f), ExplosionType.Grenade, 0.7f, 0.15f);
-            World.AddExplosion(basePos + new Vector3(RandomFloat(-2f, 2f), RandomFloat(-2f, 2f), 42f), ExplosionType.Grenade, 0.9f, 0.18f);
-            World.AddExplosion(basePos + new Vector3(RandomFloat(-3f, 3f), RandomFloat(-3f, 3f), 1.0f), ExplosionType.Grenade, 4.1f, 0.95f);
+            // Nasce alto e afastado, mas o impacto é sempre calculado no chão.
+            Vector3 start = target + new Vector3(RandomFloat(-34f, 34f), RandomFloat(-34f, 34f), RandomFloat(118f, 155f));
+            Vector3 direction = target - start;
+            float length = direction.Length();
+            if (length <= 0.01f) return;
+            Vector3 velocity = direction * (RandomFloat(3.9f, 5.3f) / length);
+
+            ActiveLightMeteor meteor = new ActiveLightMeteor();
+            meteor.Position = start;
+            meteor.Target = target;
+            meteor.Velocity = velocity;
+            meteor.CreatedAtGameTime = Game.GameTime;
+            _activeLightMeteors.Add(meteor);
+
+            while (_activeLightMeteors.Count > MeteorMaxActive) _activeLightMeteors.RemoveAt(0);
+        }
+        catch { }
+    }
+
+    private void MaintainLightMeteors()
+    {
+        if (_activeLightMeteors.Count == 0) return;
+
+        for (int i = _activeLightMeteors.Count - 1; i >= 0; i--)
+        {
+            ActiveLightMeteor meteor = _activeLightMeteors[i];
+            if (meteor == null)
+            {
+                _activeLightMeteors.RemoveAt(i);
+                continue;
+            }
+
+            DrawLightMeteor(meteor);
+            meteor.Position += meteor.Velocity;
+
+            bool reached = DistanceBetween(meteor.Position, meteor.Target) <= 5.8f || meteor.Position.Z <= meteor.Target.Z + 2.5f;
+            if (!reached && Game.GameTime - meteor.CreatedAtGameTime > MeteorFallTimeoutMs) reached = true;
+
+            if (reached)
+            {
+                ImpactLightMeteor(meteor);
+                _activeLightMeteors.RemoveAt(i);
+            }
+        }
+    }
+
+    private void DrawLightMeteor(ActiveLightMeteor meteor)
+    {
+        try
+        {
+            Vector3 p = meteor.Position;
+            Vector3 tail = p - meteor.Velocity * 7.5f;
+
+            // Visual apenas no céu: sem círculo, sem linha no chão, sem prop físico pesado.
+            Function.Call(Hash.DRAW_MARKER, 28, p.X, p.Y, p.Z, 0f, 0f, 0f, 0f, 0f, 0f, 3.6f, 3.6f, 3.6f, 255, 108, 12, 235, false, true, 2, false, null, null, false);
+            Function.Call(Hash.DRAW_MARKER, 28, p.X, p.Y, p.Z, 0f, 0f, 0f, 0f, 0f, 0f, 1.7f, 1.7f, 1.7f, 255, 220, 96, 240, false, true, 2, false, null, null, false);
+            Function.Call(Hash.DRAW_LINE, p.X, p.Y, p.Z, tail.X, tail.Y, tail.Z, 255, 96, 0, 235);
+            Function.Call(Hash.DRAW_LIGHT_WITH_RANGE, p.X, p.Y, p.Z, 255, 96, 24, 18f, 5.0f);
+        }
+        catch { }
+    }
+
+    private void ImpactLightMeteor(ActiveLightMeteor meteor)
+    {
+        try
+        {
+            Vector3 impact = meteor.Target;
+
+            // A única explosão do meteoro: sempre no impacto no chão.
+            World.AddExplosion(impact + new Vector3(0f, 0f, 0.25f), ExplosionType.Grenade, 5.2f, 0.24f);
+            try { Function.Call(Hash.SHAKE_GAMEPLAY_CAM, "SMALL_EXPLOSION_SHAKE", 0.10f); } catch { }
+
+            try { Function.Call(Hash.START_SCRIPT_FIRE, impact.X, impact.Y, impact.Z, 5, true); } catch { }
+            try { Function.Call(Hash.DRAW_LIGHT_WITH_RANGE, impact.X, impact.Y, impact.Z + 1.2f, 255, 94, 20, 16f, 4.6f); } catch { }
+
+            try
+            {
+                foreach (Vehicle vehicle in World.GetNearbyVehicles(impact, 28f))
+                {
+                    if (vehicle == null || !vehicle.Exists()) continue;
+                    Vector3 away = vehicle.Position - impact;
+                    float len = away.Length();
+                    if (len > 0.01f) away = away * (1.0f / len);
+                    else away = new Vector3(RandomFloat(-1f, 1f), RandomFloat(-1f, 1f), 0f);
+                    vehicle.ApplyForce(away * 13.0f + new Vector3(0f, 0f, 5.0f));
+                    try { vehicle.EngineHealth = Math.Max(-1000f, vehicle.EngineHealth - 420f); } catch { }
+                    try { vehicle.BodyHealth = Math.Max(40f, vehicle.BodyHealth - 340f); } catch { }
+                }
+            }
+            catch { }
         }
         catch { }
     }
